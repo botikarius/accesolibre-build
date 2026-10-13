@@ -3,12 +3,8 @@
 """
 AccesoLibre 2007
 ================
-Suite de bases de datos relacional de escritorio, de código abierto,
-inspirada funcionalmente en Microsoft Access 2007: cinta de opciones,
-panel de navegación y objetos Tabla / Consulta / Formulario / Informe / Macro.
-
-Motor interno: SQLite (archivo .oal).
-Compatibilidad nativa con ACCDB/MDB mediante Jackcess (LGPL).
+Suite de bases de datos relacional de escritorio, de código abierto.
+Motor: SQLite + Compatibilidad nativa ACCDB/MDB vía Jackcess.
 Licencia: GPL-3.0-or-later.
 """
 
@@ -24,7 +20,7 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtPrintSupport import QPrintDialog
 from PySide6.QtSql import QSqlDatabase, QSqlQuery, QSqlQueryModel, QSqlTableModel
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+    QApplication, QCheckBox, QComboBox, QDataWidgetMapper, QDialog, QDialogButtonBox,
     QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
     QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QSplitter, QStyle, QTabWidget,
@@ -182,22 +178,25 @@ def html_informe(titulo, cab, filas, agrupar=None):
 
 
 # ---------------------------------------------------------------------------
-# Motor de datos (SQLite)
+# Motor de datos
 # ---------------------------------------------------------------------------
 class GestorBD:
     def __init__(self, ruta):
         self.ruta = ruta
-# Parche de compatibilidad PySide6 / PyQt
-        try:
-            conn_name = getattr(QSqlDatabase, 'defaultConnection', 'qt_sql_default_connection')
-            if QSqlDatabase.contains(conn_name):
-                QSqlDatabase.removeDatabase(conn_name)
-        except Exception:
-            pass
-    self.db = QSqlDatabase.addDatabase("QSQLITE")
+        
+        # CORRECCIÓN DEFINITIVA DE COMPATIBILIDAD PySide6/PyQt
+        # Usamos getattr para obtener el nombre correcto de la conexión por defecto
+        # sin importar si es PyQt (defaultConnection) o PySide6 (qt_sql_default_connection)
+        DEFAULT_CONN_NAME = getattr(QSqlDatabase, 'defaultConnection', 'qt_sql_default_connection')
+        
+        if QSqlDatabase.contains(DEFAULT_CONN_NAME):
+            QSqlDatabase.removeDatabase(DEFAULT_CONN_NAME)
+            
+        self.db = QSqlDatabase.addDatabase("QSQLITE")
         self.db.setDatabaseName(ruta)
         if not self.db.open():
             raise RuntimeError(self.db.lastError().text())
+        
         self.ejecutar("CREATE TABLE IF NOT EXISTS _oa_objetos "
                       "(nombre TEXT PRIMARY KEY, tipo TEXT, definicion TEXT)")
 
@@ -253,7 +252,7 @@ class GestorBD:
 
 
 # ---------------------------------------------------------------------------
-# Diseñadores
+# Diseñador de tablas
 # ---------------------------------------------------------------------------
 class DisenadorTabla(QDialog):
     def __init__(self, parent):
@@ -261,11 +260,13 @@ class DisenadorTabla(QDialog):
         self.setWindowTitle("Diseño de tabla")
         self.resize(760, 480)
         lay = QVBoxLayout(self)
+
         fila = QHBoxLayout()
         fila.addWidget(QLabel("Nombre de la tabla:"))
         self.txtNombre = QLineEdit()
         fila.addWidget(self.txtNombre, 1)
         lay.addLayout(fila)
+
         self.grid = QTableWidget(0, 5)
         self.grid.setHorizontalHeaderLabels(
             ["Nombre del campo", "Tipo de datos", "Clave principal",
@@ -273,6 +274,7 @@ class DisenadorTabla(QDialog):
         self.grid.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.grid.verticalHeader().setVisible(False)
         lay.addWidget(self.grid, 1)
+
         barra = QHBoxLayout()
         b_add = QPushButton("Añadir campo")
         b_add.clicked.connect(self._nueva_fila)
@@ -282,6 +284,7 @@ class DisenadorTabla(QDialog):
         barra.addWidget(b_del)
         barra.addStretch(1)
         lay.addLayout(barra)
+
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
                               QDialogButtonBox.StandardButton.Cancel)
         bb.button(QDialogButtonBox.StandardButton.Ok).setText("Crear tabla")
@@ -364,6 +367,9 @@ class AgregarCampo(QDialog):
         return nom, TIPO_SQLITE[self.cmbTipo.currentText()]
 
 
+# ---------------------------------------------------------------------------
+# Diseñador de consultas
+# ---------------------------------------------------------------------------
 class DisenadorConsultas(QDialog):
     def __init__(self, parent, gestor, defn=None):
         super().__init__(parent)
@@ -371,6 +377,7 @@ class DisenadorConsultas(QDialog):
         self.setWindowTitle("Diseño de consulta")
         self.resize(820, 620)
         lay = QVBoxLayout(self)
+
         fila1 = QHBoxLayout()
         fila1.addWidget(QLabel("Nombre:"))
         self.txtNombre = QLineEdit()
@@ -380,10 +387,12 @@ class DisenadorConsultas(QDialog):
         self.cmbTabla.addItems(gestor.tablas())
         fila1.addWidget(self.cmbTabla, 1)
         lay.addLayout(fila1)
+
         fila2 = QHBoxLayout()
         self.lstCampos = QListWidget()
         self.lstCampos.itemChanged.connect(self._actualizar_sql)
         fila2.addWidget(self.lstCampos, 1)
+
         centro = QVBoxLayout()
         centro.addWidget(QLabel("Criterios de selección (se combinan con AND):"))
         self.tblCriterios = QTableWidget(4, 3)
@@ -399,6 +408,7 @@ class DisenadorConsultas(QDialog):
             self.tblCriterios.setItem(r, 2, QTableWidgetItem(""))
         self.tblCriterios.itemChanged.connect(self._actualizar_sql)
         centro.addWidget(self.tblCriterios, 1)
+
         fila_ord = QHBoxLayout()
         fila_ord.addWidget(QLabel("Ordenar por:"))
         self.cmbOrden = QComboBox()
@@ -409,15 +419,18 @@ class DisenadorConsultas(QDialog):
         centro.addLayout(fila_ord)
         fila2.addLayout(centro, 2)
         lay.addLayout(fila2, 1)
+
         lay.addWidget(QLabel("SQL generado:"))
         self.txtSQL = QPlainTextEdit()
         self.txtSQL.setReadOnly(True)
         self.txtSQL.setMaximumHeight(64)
         lay.addWidget(self.txtSQL)
+
         self._modelo_previa = QSqlQueryModel()
         self.tblPrevia = QTableView()
         self.tblPrevia.setModel(self._modelo_previa)
         lay.addWidget(self.tblPrevia, 1)
+
         barra = QHBoxLayout()
         b_prev = QPushButton("Vista previa")
         b_prev.clicked.connect(self._previsualizar)
@@ -431,6 +444,7 @@ class DisenadorConsultas(QDialog):
         bb.rejected.connect(self.reject)
         barra.addWidget(bb)
         lay.addLayout(barra)
+
         self.cmbTabla.currentTextChanged.connect(self._cargar_campos)
         if self.cmbTabla.count():
             self._cargar_campos(self.cmbTabla.currentText())
@@ -545,6 +559,9 @@ class DisenadorConsultas(QDialog):
         return defn
 
 
+# ---------------------------------------------------------------------------
+# Diseñadores de formulario e informe
+# ---------------------------------------------------------------------------
 class DisenadorFormulario(QDialog):
     def __init__(self, parent, gestor, defn=None):
         super().__init__(parent)
@@ -672,7 +689,7 @@ class DisenadorInforme(QDialog):
 
 
 # ---------------------------------------------------------------------------
-# Vistas
+# Objetos abiertos en el área de trabajo
 # ---------------------------------------------------------------------------
 class VistaDatos(QWidget):
     def __init__(self, gestor, tabla=None, sql=None):
@@ -743,7 +760,6 @@ class VistaDatos(QWidget):
 class Formulario(QWidget):
     def __init__(self, gestor, defn):
         super().__init__()
-        from PySide6.QtSql import QSqlTableModel, QDataWidgetMapper
         tabla = defn["tabla"]
         sel = set(defn.get("campos") or [])
         self.modelo = QSqlTableModel(self)
@@ -753,6 +769,7 @@ class Formulario(QWidget):
         self.mapper = QDataWidgetMapper(self)
         self.mapper.setModel(self.modelo)
         self.mapper.setSubmitPolicy(QDataWidgetMapper.SubmitPolicy.ManualSubmit)
+
         lay = QVBoxLayout(self)
         cab = QLabel(f"Formulario: {tabla}")
         cab.setStyleSheet("font-weight:bold;font-size:14px;color:#2b579a")
@@ -776,6 +793,7 @@ class Formulario(QWidget):
             form.addRow(col["nombre"], w)
             self.mapper.addMapping(w, i)
         lay.addLayout(form)
+
         nav = QHBoxLayout()
         for texto, slot in (("|<", self.mapper.toFirst), ("<", self.mapper.toPrevious),
                             (">", self.mapper.toNext), (">|", self.mapper.toLast)):
@@ -796,6 +814,7 @@ class Formulario(QWidget):
         nav.addWidget(self.lblEstado)
         lay.addLayout(nav)
         lay.addStretch(1)
+
         self.mapper.currentChanged.connect(self._actualizar_estado)
         self.mapper.toFirst()
         self._actualizar_estado()
@@ -967,12 +986,15 @@ class VentanaPrincipal(QMainWindow):
         self.gestor = None
         self.setWindowTitle("AccesoLibre 2007 — suite de bases de datos de código abierto")
         self.resize(1180, 740)
+
         central = QWidget()
         self.setCentralWidget(central)
         raiz = QVBoxLayout(central)
         raiz.setContentsMargins(4, 4, 4, 4)
         raiz.setSpacing(3)
+
         raiz.addWidget(self._construir_cinta())
+
         divisor = QSplitter()
         self.arbol = QTreeWidget()
         self.arbol.setHeaderHidden(True)
@@ -987,8 +1009,10 @@ class VentanaPrincipal(QMainWindow):
         divisor.addWidget(self.espacio)
         divisor.setSizes([240, 940])
         raiz.addWidget(divisor, 1)
+
         self.statusBar().showMessage("Cree o abra una base de datos para comenzar.")
 
+    # -- cinta de opciones ---------------------------------------------------
     def _boton(self, texto, icono, slot):
         b = QToolButton()
         b.setText(texto)
@@ -1012,6 +1036,7 @@ class VentanaPrincipal(QMainWindow):
         SP = QStyle.StandardPixmap
         cinta = QTabWidget()
         cinta.setFixedHeight(124)
+
         ini = QWidget()
         h = QHBoxLayout(ini)
         h.addWidget(self._grupo("Archivo", [
@@ -1026,6 +1051,7 @@ class VentanaPrincipal(QMainWindow):
             self._boton("Actualizar", SP.SP_BrowserReload, self.refrescar_navegacion)]))
         h.addStretch(1)
         cinta.addTab(ini, "Inicio")
+
         crear = QWidget()
         h = QHBoxLayout(crear)
         h.addWidget(self._grupo("Tablas",
@@ -1043,6 +1069,7 @@ class VentanaPrincipal(QMainWindow):
                                 [self._boton("Macro", SP.SP_MediaPlay, self.crear_macro)]))
         h.addStretch(1)
         cinta.addTab(crear, "Crear")
+
         ext = QWidget()
         h = QHBoxLayout(ext)
         h.addWidget(self._grupo("Acceso NATIVO", [
@@ -1050,12 +1077,15 @@ class VentanaPrincipal(QMainWindow):
                         self.abrir_accdb_directo)]))
         h.addWidget(self._grupo("Importar", [
             self._boton("Importar CSV", SP.SP_DirOpenIcon, self.importar_csv),
-            self._boton("Importar ACCDB/MDB", SP.SP_DialogOpenButton, self.importar_accdb)]))
+            self._boton("Importar ACCDB/MDB", SP.SP_DialogOpenButton,
+                        self.importar_accdb)]))
         h.addWidget(self._grupo("Exportar", [
             self._boton("Exportar CSV", SP.SP_DirIcon, self.exportar_csv),
-            self._boton("Exportar a ACCDB", SP.SP_DialogSaveButton, self.exportar_accdb)]))
+            self._boton("Exportar a ACCDB", SP.SP_DialogSaveButton,
+                        self.exportar_accdb)]))
         h.addStretch(1)
         cinta.addTab(ext, "Datos externos")
+
         her = QWidget()
         h = QHBoxLayout(her)
         h.addWidget(self._grupo("SQL",
@@ -1069,6 +1099,7 @@ class VentanaPrincipal(QMainWindow):
         cinta.addTab(her, "Herramientas de BD")
         return cinta
 
+    # -- conexión ------------------------------------------------------------
     def _conectar(self, ruta):
         self.espacio.clear()
         try:
@@ -1099,6 +1130,7 @@ class VentanaPrincipal(QMainWindow):
         QMessageBox.information(self, "AccesoLibre",
                                 "Primero cree o abra una base de datos (Inicio → Archivo).")
 
+    # -- panel de navegación ---------------------------------------------------
     def refrescar_navegacion(self):
         self.arbol.clear()
         if not self.gestor:
@@ -1167,6 +1199,7 @@ class VentanaPrincipal(QMainWindow):
         menu.addAction("Eliminar", self.eliminar_seleccion)
         menu.exec(self.arbol.mapToGlobal(pos))
 
+    # -- operaciones con objetos ----------------------------------------------
     def _pestana(self, widget, titulo):
         self.espacio.addTab(widget, titulo)
         self.espacio.setCurrentWidget(widget)
@@ -1340,6 +1373,7 @@ class VentanaPrincipal(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
 
+    # -- datos externos --------------------------------------------------------
     def importar_csv(self):
         if not self.gestor:
             return self._sin_bd()
@@ -1456,6 +1490,7 @@ class VentanaPrincipal(QMainWindow):
         self.statusBar().showMessage(
             "Modo nativo: los cambios se guardan directamente en el .accdb.")
 
+    # -- herramientas ------------------------------------------------------------
     def consola_sql(self):
         if not self.gestor:
             return self._sin_bd()
@@ -1477,6 +1512,7 @@ class VentanaPrincipal(QMainWindow):
         self.gestor.ejecutar(f"VACUUM INTO '{esc(ruta)}'")
         QMessageBox.information(self, "Copia de seguridad", f"Copia creada en {ruta}.")
 
+    # -- base de ejemplo -----------------------------------------------------------
     def abrir_ejemplo(self):
         ruta = os.path.join(os.path.expanduser("~"), "AccesoLibre_Ejemplo.oal")
         self._conectar(ruta)
@@ -1528,6 +1564,7 @@ class VentanaPrincipal(QMainWindow):
         evento.accept()
 
 
+# ---------------------------------------------------------------------------
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("AccesoLibre 2007")
@@ -1538,11 +1575,11 @@ def main():
         " color:#2b579a}")
     v = VentanaPrincipal()
     v.show()
+
     mb = QMessageBox(v)
     mb.setWindowTitle("Bienvenido a AccesoLibre 2007")
     mb.setText("AccesoLibre 2007 — suite de bases de datos relacional de código abierto.\n"
-               "Incluye tablas, consultas, formularios, informes y macros sobre SQLite.\n"
-               "Compatible con archivos ACCDB/MDB de Microsoft Access.")
+               "Incluye tablas, consultas, formularios, informes y macros sobre SQLite.")
     b_nueva = mb.addButton("Crear base de datos nueva…", QMessageBox.ButtonRole.AcceptRole)
     b_abrir = mb.addButton("Abrir base de datos existente…", QMessageBox.ButtonRole.ActionRole)
     b_ejemplo = mb.addButton("Abrir base de ejemplo", QMessageBox.ButtonRole.ActionRole)
