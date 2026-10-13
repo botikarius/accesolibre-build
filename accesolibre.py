@@ -187,9 +187,8 @@ def html_informe(titulo, cab, filas, agrupar=None):
 class GestorBD:
     def __init__(self, ruta):
         self.ruta = ruta
-        if QSqlDatabase.contains(QSqlDatabase.defaultConnection):
-            QSqlDatabase.removeDatabase(QSqlDatabase.defaultConnection)
-        self.db = QSqlDatabase.addDatabase("QSQLITE")
+        if QSqlDatabase.contains("qt_sql_default_connection"):
+    QSqlDatabase.removeDatabase("qt_sql_default_connection")        self.db = QSqlDatabase.addDatabase("QSQLITE")
         self.db.setDatabaseName(ruta)
         if not self.db.open():
             raise RuntimeError(self.db.lastError().text())
