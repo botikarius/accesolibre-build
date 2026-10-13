@@ -187,8 +187,14 @@ def html_informe(titulo, cab, filas, agrupar=None):
 class GestorBD:
     def __init__(self, ruta):
         self.ruta = ruta
-        if QSqlDatabase.contains("qt_sql_default_connection"):
-    QSqlDatabase.removeDatabase("qt_sql_default_connection")        self.db = QSqlDatabase.addDatabase("QSQLITE")
+# Parche de compatibilidad PySide6 / PyQt
+        try:
+            conn_name = getattr(QSqlDatabase, 'defaultConnection', 'qt_sql_default_connection')
+            if QSqlDatabase.contains(conn_name):
+                QSqlDatabase.removeDatabase(conn_name)
+        except Exception:
+            pass
+    self.db = QSqlDatabase.addDatabase("QSQLITE")
         self.db.setDatabaseName(ruta)
         if not self.db.open():
             raise RuntimeError(self.db.lastError().text())
