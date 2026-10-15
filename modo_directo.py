@@ -4,9 +4,7 @@
 modo_directo.py — Lectura/escritura NATIVA sobre .accdb y .mdb
 =============================================================
 Edita las filas del archivo Access original mediante Jackcess (LGPL).
-Soporta archivos cifrados con contraseña.
-
-Requiere: JPype1 + JRE (embebido si se empaqueta el programa con jlink).
+Soporta archivos cifrados con contraseña (pide la clave al abrir).
 """
 
 import os
@@ -18,7 +16,7 @@ from datetime import datetime
 import jpype
 import jpype.imports
 
-from PySide6.QtCore import Qt, QAbstractTableModel
+from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QHBoxLayout, QHeaderView,
@@ -27,11 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Localización de recursos y arranque de la JVM
-# ---------------------------------------------------------------------------
 def recurso(relativo):
-    """Funciona en ejecución desde fuente y dentro del binario PyInstaller."""
     bases = []
     if getattr(sys, "frozen", False):
         bases.append(os.path.dirname(os.path.abspath(sys.executable)))
@@ -46,64 +40,44 @@ def recurso(relativo):
 
 
 def _buscar_libjvm():
-    """Busca libjvm.dylib en las rutas típicas de macOS dentro del bundle .app"""
     import platform
-    import glob as _glob
-    
     bases = []
-    
-    # Ruta dentro del bundle PyInstaller en macOS
     if getattr(sys, "frozen", False):
         if hasattr(sys, "_MEIPASS"):
             bases.append(os.path.join(sys._MEIPASS, "jre"))
         bases.append(os.path.join(os.path.dirname(sys.executable), "..", "Resources", "jre"))
         bases.append(os.path.join(os.path.dirname(sys.executable), "jre"))
-    
-    # Ruta de desarrollo (cuando ejecutas desde fuente)
     bases.append(recurso("jre"))
-    
-    # Rutas típicas de Java instalado en macOS
     bases.append("/Library/Java/JavaVirtualMachines")
     bases.append(os.path.expanduser("~/Library/Java/JavaVirtualMachines"))
-    
-    # Buscar libjvm.dylib (macOS) o libjvm.so (Linux)
+
     sistema = platform.system()
-    if sistema == "Darwin":  # macOS
+    if sistema == "Darwin":
         nombre_lib = "libjvm.dylib"
-        rutas_busqueda = [
-            "lib/server/libjvm.dylib",
-            "jre/lib/server/libjvm.dylib",
-            "Contents/Home/lib/server/libjvm.dylib",
-        ]
-    else:  # Linux
+        rutas = ["lib/server/libjvm.dylib",
+                 "jre/lib/server/libjvm.dylib",
+                 "Contents/Home/lib/server/libjvm.dylib"]
+    else:
         nombre_lib = "libjvm.so"
-        rutas_busqueda = [
-            "lib/server/libjvm.so",
-            "jre/lib/server/libjvm.so",
-        ]
-    
+        rutas = ["lib/server/libjvm.so",
+                 "jre/lib/server/libjvm.so"]
+
     for base in bases:
         if not os.path.isdir(base):
             continue
-        for ruta_rel in rutas_busqueda:
-            candidato = os.path.join(base, ruta_rel)
-            if os.path.isfile(candidato):
-                return candidato
-        
-        # Búsqueda recursiva por si la estructura es diferente
-        for archivo in _glob.glob(os.path.join(base, "**", nombre_lib), recursive=True):
-            if os.path.isfile(archivo):
-                return archivo
-    
+        for rel in rutas:
+            cand = os.path.join(base, rel)
+            if os.path.isfile(cand):
+                return cand
+        for arch in glob.glob(os.path.join(base, "**", nombre_lib), recursive=True):
+            if os.path.isfile(arch):
+                return arch
     return None
 
 
 def iniciar_java():
-    """Arranca la JVM una sola vez, usando el JRE embebido si existe."""
     if jpype.isJVMStarted():
         return
-
-    # Buscar JARs en la carpeta 'jar' (tanto en desarrollo como en bundle)
     bases = []
     if getattr(sys, "frozen", False):
         if hasattr(sys, "_MEIPASS"):
@@ -111,16 +85,14 @@ def iniciar_java():
         bases.append(os.path.join(os.path.dirname(sys.executable), "..", "Resources", "jar"))
         bases.append(os.path.join(os.path.dirname(sys.executable), "jar"))
     bases.append(recurso("jar"))
-    
+
     jars = []
     for base in bases:
         if os.path.isdir(base):
             for f in sorted(os.listdir(base)):
                 if f.endswith(".jar"):
                     jars.append(os.path.join(base, f))
-    
     if not jars:
-        # Si no hay JARs locales, descargar los básicos (sin cifrado)
         from puente_access import asegurar_jars
         jars = asegurar_jars()
 
@@ -136,7 +108,8 @@ def iniciar_java():
             raise
         raiz = os.path.dirname(os.path.dirname(os.path.dirname(jvm)))
         os.environ["JAVA_HOME"] = raiz
-        os.environ["PATH"] = (os.path.join(raiz, "bin") + os.pathsep + os.environ.get("PATH", ""))
+        os.environ["PATH"] = (os.path.join(raiz, "bin") + os.pathsep
+                              + os.environ.get("PATH", ""))
         jpype.startJVM(*opts, classpath=jars, convertStrings=True)
     except Exception as e:
         raise RuntimeError(
@@ -144,9 +117,6 @@ def iniciar_java():
             "Instale: sudo apt install default-jre-headless\n\n" + str(e)) from e
 
 
-# ---------------------------------------------------------------------------
-# Conversión de valores Java <-> Python
-# ---------------------------------------------------------------------------
 def _es_binario(tipo):
     t = tipo.upper()
     return any(x in t for x in ("OLE", "BINARY", "ATTACH", "COMPLEX"))
@@ -156,17 +126,14 @@ def _a_py(v, tipo):
     if v is None or _es_binario(tipo):
         return None
     t = tipo.upper()
-
     if "DATE" in t or "TIME" in t:
         return str(v)
     if "MONEY" in t or t == "NUMERIC":
         return str(v)
     if "BOOLEAN" in t:
         return str(v).strip().lower() in ("true", "1", "-1")
-
     if isinstance(v, (bool, int, float, str)):
         return v
-
     n = type(v).__name__
     if n in ("JBoolean", "Boolean"):
         return str(v).lower() in ("true", "1", "-1")
@@ -185,32 +152,26 @@ def _a_py(v, tipo):
 
 
 def normalizar(texto, tipo):
-    """Valida y normaliza lo que el usuario escribe en una celda."""
     t = tipo.upper()
     s = str(texto).strip()
     if s == "":
         return None
-
     if "BOOLEAN" in t:
         return s.lower() in ("1", "true", "sí", "si", "s", "yes", "verdadero")
-
     if "DATE" in t or "TIME" in t:
         s2 = s.replace("T", " ")
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
-                    "%Y-%m-%d", "%d/%m/%Y"):
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%d/%m/%Y"):
             try:
                 return datetime.strptime(s2, fmt).strftime("%Y-%m-%d %H:%M:%S")
             except ValueError:
                 pass
         raise ValueError("Fecha inválida. Use AAAA-MM-DD o AAAA-MM-DD HH:MM:SS.")
-
     if "MONEY" in t or t == "NUMERIC":
         try:
             float(s.replace(",", "."))
         except ValueError:
             raise ValueError("Se requiere un número.")
         return s.replace(",", ".")
-
     if any(x in t for x in ("BYTE", "SHORT", "INT", "LONG")):
         try:
             return int(s)
@@ -222,23 +183,19 @@ def normalizar(texto, tipo):
             if f != int(f):
                 raise ValueError("Se requiere un número entero.")
             return int(f)
-
     if any(x in t for x in ("FLOAT", "DOUBLE", "REAL")):
         try:
             return float(s.replace(",", "."))
         except ValueError:
             raise ValueError("Se requiere un número.")
-
     return s
 
 
 def _a_java(v, tipo):
-    """Construye objetos Java EXPLÍCITOS (evita ambigüedades de sobrecarga)."""
     if v is None:
         return None
     t = tipo.upper()
     from java.lang import Integer, Long, Double, Boolean, String
-
     if "DATE" in t or "TIME" in t:
         from java.sql import Timestamp
         s = str(v)
@@ -247,33 +204,24 @@ def _a_java(v, tipo):
         if "." not in s:
             s += ".0"
         return Timestamp.valueOf(s)
-
     if "BOOLEAN" in t:
         return Boolean(bool(v))
-
     if "MONEY" in t or t == "NUMERIC":
         from java.math import BigDecimal
         return BigDecimal(str(v))
-
     if any(x in t for x in ("BYTE", "SHORT", "INT", "LONG")):
         n = int(v)
         return Long(n) if ("LONG" in t or "BIGINT" in t) else Integer(n)
-
     if any(x in t for x in ("FLOAT", "DOUBLE", "REAL")):
         return Double(float(v))
-
     return String(str(v))
 
 
-# ---------------------------------------------------------------------------
-# Acceso nativo al archivo
-# ---------------------------------------------------------------------------
 class AccesoDirecto:
     def __init__(self, ruta, password=None):
         self.ruta = os.path.abspath(ruta)
         if not os.path.isfile(self.ruta):
             raise FileNotFoundError(f"No existe el archivo: {self.ruta}")
-
         iniciar_java()
         from java.io import File
         from com.healthmarketscience.jackcess import DatabaseBuilder
@@ -281,41 +229,33 @@ class AccesoDirecto:
         self.solo_lectura = not os.access(self.ruta, os.W_OK)
         builder = DatabaseBuilder(File(self.ruta))
         builder.setReadOnly(self.solo_lectura)
-        
-        # Si hay contraseña, configurar el codec de cifrado
+
         if password:
             try:
                 from com.healthmarketscience.jackcess.crypt import CryptCodecProvider
-                codec = CryptCodecProvider(password)
-                builder.setCodecProvider(codec)
+                builder.setCodecProvider(CryptCodecProvider(password))
             except Exception as e:
                 raise RuntimeError(
                     f"Error al configurar el descifrado: {e}\n"
-                    "Asegúrese de que las librerías jackcess-encrypt y Bouncy Castle "
-                    "están disponibles en la carpeta 'jar'.")
-        
+                    "Faltan las librerías jackcess-encrypt / Bouncy Castle en 'jar'.")
+
         try:
             self.db = builder.open()
         except Exception as e:
-            error_msg = str(e)
-            if "UnsupportedCodecException" in error_msg or "Decoding not supported" in error_msg:
+            msg = str(e)
+            if ("UnsupportedCodecException" in msg or "Decoding not supported" in msg
+                    or "encrypted" in msg.lower() or "password" in msg.lower()):
                 raise RuntimeError(
                     "El archivo está cifrado con contraseña.\n"
                     "Por favor, introduzca la contraseña correcta.") from e
-            elif "encrypted" in error_msg.lower() or "password" in error_msg.lower():
-                raise RuntimeError(
-                    "El archivo está protegido con contraseña.\n"
-                    "Por favor, introduzca la contraseña correcta.") from e
-            else:
-                raise RuntimeError(
-                    "No se pudo abrir el archivo Access.\n"
-                    "Compruebe que:\n"
-                    "  • no está abierto en Microsoft Access;\n"
-                    "  • no está dañado o es una versión muy antigua.\n\n"
-                    f"Detalle técnico: {error_msg}") from e
+            raise RuntimeError(
+                "No se pudo abrir el archivo Access.\n"
+                "Compruebe que:\n"
+                "  • no está abierto en Microsoft Access;\n"
+                "  • no está dañado o es una versión muy antigua.\n\n"
+                f"Detalle técnico: {msg}") from e
 
-        self.aviso_lock = os.path.exists(
-            os.path.splitext(self.ruta)[0] + ".laccdb")
+        self.aviso_lock = os.path.exists(os.path.splitext(self.ruta)[0] + ".laccdb")
 
     def tablas(self):
         out = []
@@ -331,17 +271,11 @@ class AccesoDirecto:
         for c in t.getColumns():
             tipo = str(c.getType()).split(".")[-1].upper()
             complejo = bool(getattr(c, "isComplex", lambda: False)())
-            cols.append({
-                "nombre": str(c.getName()),
-                "tipo": tipo,
-                "auto": bool(str(c.isAutoNumber()).lower() == "true"),
-                "blob": _es_binario(tipo) or complejo,
-                "pk": False,
-            })
+            cols.append({"nombre": str(c.getName()), "tipo": tipo,
+                         "auto": str(c.isAutoNumber()).lower() == "true",
+                         "blob": _es_binario(tipo) or complejo, "pk": False})
         idx = t.getPrimaryKeyIndex()
-        pk = []
-        if idx is not None:
-            pk = [str(ic.getName()) for ic in idx.getColumns()]
+        pk = [str(ic.getName()) for ic in idx.getColumns()] if idx is not None else []
         for c in cols:
             c["pk"] = c["nombre"] in pk
         return cols, pk
@@ -349,10 +283,8 @@ class AccesoDirecto:
     def leer(self, nombre):
         cols, pk = self.metadata(nombre)
         t = self.db.getTable(nombre)
-        filas = []
-        for row in t:
-            filas.append({c["nombre"]: _a_py(row.get(c["nombre"]), c["tipo"])
-                          for c in cols})
+        filas = [{c["nombre"]: _a_py(row.get(c["nombre"]), c["tipo"]) for c in cols}
+                 for row in t]
         return cols, pk, filas
 
     def copia_seguridad(self):
@@ -380,8 +312,7 @@ class AccesoDirecto:
                 continue
             m.put(c["nombre"], _a_java(fila.get(c["nombre"]), c["tipo"]))
         if t.updateRow(m) is False:
-            raise RuntimeError("No se encontró la fila original "
-                               "(¿la modificó otro programa?).")
+            raise RuntimeError("No se encontró la fila original.")
 
     def borrar(self, nombre, cols, fila):
         from java.util import HashMap
@@ -401,9 +332,6 @@ class AccesoDirecto:
                 self.db = None
 
 
-# ---------------------------------------------------------------------------
-# Modelo Qt editable
-# ---------------------------------------------------------------------------
 class ModeloDirecto(QAbstractTableModel):
     def __init__(self, acceso, nombre):
         super().__init__()
@@ -464,14 +392,12 @@ class ModeloDirecto(QAbstractTableModel):
         r, col = index.row(), index.column()
         c = self.cols[col]
         v = self.filas[r].get(c["nombre"])
-
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
             if v is None:
                 return ""
             if "BOOLEAN" in c["tipo"].upper():
                 return "Sí" if v else "No"
             return str(v)
-
         if role == Qt.ItemDataRole.BackgroundRole:
             if r in self.bajas:
                 return QBrush(QColor("#ffe0e0"))
@@ -479,7 +405,6 @@ class ModeloDirecto(QAbstractTableModel):
                 return QBrush(QColor("#e2f5e2"))
             if r in self.sucios:
                 return QBrush(QColor("#fff3cf"))
-
         if role == Qt.ItemDataRole.ToolTipRole:
             if r in self.bajas:
                 return "Marcada para eliminar al guardar"
@@ -501,7 +426,6 @@ class ModeloDirecto(QAbstractTableModel):
         except ValueError as e:
             self.error = f"{c['nombre']}: {e}"
             return False
-
         if self.filas[r].get(c["nombre"]) == nuevo:
             return False
         self.filas[r][c["nombre"]] = nuevo
@@ -527,8 +451,7 @@ class ModeloDirecto(QAbstractTableModel):
         if self.lectura or not (0 <= r < len(self.filas)):
             return
         self.bajas.add(r)
-        self.dataChanged.emit(self.index(r, 0),
-                              self.index(r, len(self.cols) - 1))
+        self.dataChanged.emit(self.index(r, 0), self.index(r, len(self.cols) - 1))
 
     def descartar(self):
         self._recargar()
@@ -538,10 +461,8 @@ class ModeloDirecto(QAbstractTableModel):
             raise RuntimeError(
                 "Tabla de solo lectura: se requiere clave principal "
                 "y permisos de escritura sobre el archivo.")
-
         backup = self.acceso.copia_seguridad() if hacer_backup else None
         aplicados, errores = 0, []
-
         for r in sorted(self.nuevos):
             if r in self.bajas:
                 continue
@@ -550,7 +471,6 @@ class ModeloDirecto(QAbstractTableModel):
                 aplicados += 1
             except Exception as e:
                 errores.append(f"Alta (fila {r + 1}): {e}")
-
         for r in sorted(self.sucios):
             if r in self.bajas or r in self.nuevos:
                 continue
@@ -559,7 +479,6 @@ class ModeloDirecto(QAbstractTableModel):
                 aplicados += 1
             except Exception as e:
                 errores.append(f"Modificación (fila {r + 1}): {e}")
-
         for r in sorted(self.bajas):
             if r in self.nuevos:
                 continue
@@ -568,7 +487,6 @@ class ModeloDirecto(QAbstractTableModel):
                 aplicados += 1
             except Exception as e:
                 errores.append(f"Baja (fila {r + 1}): {e}")
-
         self._recargar()
         return aplicados, errores, backup
 
@@ -595,9 +513,6 @@ class DelegadoTipo(QStyledItemDelegate):
         model.setData(index, v, Qt.ItemDataRole.EditRole)
 
 
-# ---------------------------------------------------------------------------
-# Ventana del modo directo
-# ---------------------------------------------------------------------------
 class VistaDirecto(QWidget):
     def __init__(self, ruta, password=None):
         super().__init__()
@@ -606,53 +521,50 @@ class VistaDirecto(QWidget):
         self.acceso = None
         self.modelo = None
         self._cerrado = False
-        
         self._abrir_archivo()
 
     def _abrir_archivo(self):
-        """Intenta abrir el archivo, pidiendo contraseña si es necesario."""
         try:
             self.acceso = AccesoDirecto(self.ruta, self.password)
         except RuntimeError as e:
-            error_msg = str(e)
-            if "contraseña" in error_msg.lower() or "password" in error_msg.lower():
+            msg = str(e)
+            if ("contraseña" in msg.lower() or "password" in msg.lower()
+                    or "cifrado" in msg.lower()):
                 password, ok = QInputDialog.getText(
                     self, "Archivo cifrado",
                     "Este archivo Access está protegido con contraseña.\n"
                     "Introduzca la contraseña para abrirlo:",
                     QLineEdit.EchoMode.Password)
-                if ok and password:
+                if not (ok and password):
+                    return
+                try:
+                    self.acceso = AccesoDirecto(self.ruta, password)
                     self.password = password
-                    try:
-                        self.acceso = AccesoDirecto(self.ruta, self.password)
-                    except Exception as e2:
-                        QMessageBox.critical(self, "Error", 
-                            f"No se pudo abrir el archivo con esa contraseña:\n{e2}")
-                        return
-                else:
+                except Exception as e2:
+                    QMessageBox.critical(
+                        self, "Error",
+                        f"No se pudo abrir el archivo con esa contraseña:\n{e2}")
                     return
             else:
-                QMessageBox.critical(self, "Error", error_msg)
+                QMessageBox.critical(self, "Error", msg)
                 return
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
             return
-        
+        if self.acceso is None:
+            return
         self._construir_interfaz()
-    
+
     def _construir_interfaz(self):
-        """Construye la interfaz de usuario una vez que el archivo está abierto."""
         lay = QVBoxLayout(self)
         titulo = QLabel(f"EDICIÓN NATIVA · {self.acceso.ruta}")
         titulo.setStyleSheet("font-weight:bold;color:#2b579a;font-size:13px")
         lay.addWidget(titulo)
-
         if self.acceso.aviso_lock:
             aviso = QLabel("⚠ Existe un archivo .laccdb. "
                            "Asegúrese de que MS Access NO tiene esta base abierta.")
             aviso.setStyleSheet("color:#a33;font-weight:bold")
             lay.addWidget(aviso)
-
         fila1 = QHBoxLayout()
         fila1.addWidget(QLabel("Tabla:"))
         self.cmb = QComboBox()
@@ -662,7 +574,6 @@ class VistaDirecto(QWidget):
         self._boton(fila1, "Abrir tabla", self.abrir_tabla)
         self._boton(fila1, "Recargar", self.recargar)
         lay.addLayout(fila1)
-
         fila2 = QHBoxLayout()
         self.btnGuardar = self._boton(fila2, "GUARDAR en el .accdb", self.guardar)
         self._boton(fila2, "Descartar cambios", self.descartar)
@@ -673,7 +584,6 @@ class VistaDirecto(QWidget):
         fila2.addWidget(self.chkBackup)
         fila2.addStretch(1)
         lay.addLayout(fila2)
-
         self.vista = QTableView()
         self.vista.setAlternatingRowColors(True)
         self.vista.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
@@ -682,7 +592,6 @@ class VistaDirecto(QWidget):
         self.vista.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.ResizeToContents)
         lay.addWidget(self.vista, 1)
-
         self.estado = QLabel(
             "Doble clic en una celda para editar.  "
             "Amarillo = modificado · Verde = nuevo · Rojo = marcado para eliminar.")
@@ -691,7 +600,6 @@ class VistaDirecto(QWidget):
         self._actualizar_botones()
 
     def _boton(self, layout, texto, slot):
-        from PySide6.QtWidgets import QPushButton
         b = QPushButton(texto)
         b.clicked.connect(slot)
         layout.addWidget(b)
@@ -706,8 +614,7 @@ class VistaDirecto(QWidget):
         if self.modelo and self.modelo.pendientes():
             r = QMessageBox.question(
                 self, "Cambios sin guardar",
-                f"Hay {self.modelo.pendientes()} cambio(s) sin guardar. "
-                "¿Descartarlos?")
+                f"Hay {self.modelo.pendientes()} cambio(s) sin guardar. ¿Descartarlos?")
             return r == QMessageBox.StandardButton.Yes
         return True
 
@@ -725,13 +632,11 @@ class VistaDirecto(QWidget):
         self.vista.setItemDelegate(DelegadoTipo(self.vista))
         self.vista.resizeColumnsToContents()
         if self.modelo.lectura:
-            self.estado.setText(
-                "SOLO LECTURA: esta tabla no tiene clave principal "
-                "o el archivo no permite escritura.")
+            self.estado.setText("SOLO LECTURA: esta tabla no tiene clave principal "
+                                "o el archivo no permite escritura.")
         else:
-            self.estado.setText(
-                f"{self.modelo.rowCount()} filas · "
-                "Doble clic para editar · Guardar escribe en el .accdb original.")
+            self.estado.setText(f"{self.modelo.rowCount()} filas · "
+                                "Doble clic para editar · Guardar escribe en el .accdb original.")
         self._actualizar_botones()
 
     def recargar(self):
@@ -747,8 +652,7 @@ class VistaDirecto(QWidget):
             self.vista.scrollToBottom()
             self._actualizar_botones()
         else:
-            QMessageBox.information(self, "Solo lectura",
-                                    "Esta tabla no admite edición.")
+            QMessageBox.information(self, "Solo lectura", "Esta tabla no admite edición.")
 
     def marcar_baja(self):
         if not self.modelo:
@@ -772,20 +676,15 @@ class VistaDirecto(QWidget):
         n = self.modelo.pendientes()
         r = QMessageBox.question(
             self, "Guardar en el archivo Access",
-            f"Se van a aplicar {n} cambio(s) DIRECTAMENTE sobre:\n"
-            f"{self.acceso.ruta}\n\n"
-            "Los guardados se aplican fila a fila (sin transacción). "
-            "¿Continuar?")
+            f"Se van a aplicar {n} cambio(s) DIRECTAMENTE sobre:\n{self.acceso.ruta}\n\n"
+            "Los guardados se aplican fila a fila (sin transacción). ¿Continuar?")
         if r != QMessageBox.StandardButton.Yes:
             return
-
         try:
-            aplicados, errores, backup = self.modelo.guardar(
-                self.chkBackup.isChecked())
+            aplicados, errores, backup = self.modelo.guardar(self.chkBackup.isChecked())
         except Exception as e:
             QMessageBox.critical(self, "No se pudo guardar", str(e))
             return
-
         self._actualizar_botones()
         if errores:
             texto = (f"Aplicados {aplicados} cambio(s).\n"
@@ -818,8 +717,8 @@ class VistaDirecto(QWidget):
                 self.guardar()
                 if self.modelo.pendientes():
                     return False
-
-        self.acceso.cerrar()
+        if self.acceso:
+            self.acceso.cerrar()
         self._cerrado = True
         return True
 
