@@ -6,9 +6,14 @@ on:
 jobs:
   build-macos:
     strategy:
+      fail-fast: false
       matrix:
-        os: [macos-13, macos-14]  # x64 y arm64
-    runs-on: ${{ matrix.os }}
+        include:
+          - runner: macos-13
+            arch: x64
+          - runner: macos-14
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Descargar código
         uses: actions/checkout@v4
@@ -25,44 +30,45 @@ jobs:
 
       - name: Descargar librerías Java (Jackcess + Encrypt)
         run: |
-          mkdir jar
-          # Jackcess principal
-          Invoke-WebRequest -Uri "https://repo1.maven.org/maven2/com/healthmarketscience/jackcess/jackcess/4.0.5/jackcess-4.0.5.jar" -OutFile "jar/jackcess-4.0.5.jar"
-          # Dependencias de Jackcess
-          Invoke-WebRequest -Uri "https://repo1.maven.org/maven2/org/apache/commons/commons-lang3/3.12.0/commons-lang3-3.12.0.jar" -OutFile "jar/commons-lang3-3.12.0.jar"
-          Invoke-WebRequest -Uri "https://repo1.maven.org/maven2/commons-logging/commons-logging/1.2/commons-logging-1.2.jar" -OutFile "jar/commons-logging-1.2.jar"
-          # Jackcess Encrypt (para archivos con contraseña)
-          Invoke-WebRequest -Uri "https://repo1.maven.org/maven2/com/healthmarketscience/jackcess/jackcess-encrypt/3.0.0/jackcess-encrypt-3.0.0.jar" -OutFile "jar/jackcess-encrypt-3.0.0.jar"
-          # Bouncy Castle (requerido por jackcess-encrypt)
-          Invoke-WebRequest -Uri "https://repo1.maven.org/maven2/org/bouncycastle/bcpkix-jdk15on/1.70/bcpkix-jdk15on-1.70.jar" -OutFile "jar/bcpkix-jdk15on-1.70.jar"
-          Invoke-WebRequest -Uri "https://repo1.maven.org/maven2/org/bouncycastle/bcprov-jdk15on/1.70/bcprov-jdk15on-1.70.jar" -OutFile "jar/bcprov-jdk15on-1.70.jar"
+          mkdir -p jar
+          curl -fsSL -o jar/jackcess-4.0.5.jar "https://repo1.maven.org/maven2/com/healthmarketscience/jackcess/jackcess/4.0.5/jackcess-4.0.5.jar"
+          curl -fsSL -o jar/commons-lang3-3.12.0.jar "https://repo1.maven.org/maven2/org/apache/commons/commons-lang3/3.12.0/commons-lang3-3.12.0.jar"
+          curl -fsSL -o jar/commons-logging-1.2.jar "https://repo1.maven.org/maven2/commons-logging/commons-logging/1.2/commons-logging-1.2.jar"
+          curl -fsSL -o jar/jackcess-encrypt-3.0.0.jar "https://repo1.maven.org/maven2/com/healthmarketscience/jackcess/jackcess-encrypt/3.0.0/jackcess-encrypt-3.0.0.jar"
+          curl -fsSL -o jar/bcpkix-jdk15on-1.70.jar "https://repo1.maven.org/maven2/org/bouncycastle/bcpkix-jdk15on/1.70/bcpkix-jdk15on-1.70.jar"
+          curl -fsSL -o jar/bcprov-jdk15on-1.70.jar "https://repo1.maven.org/maven2/org/bouncycastle/bcprov-jdk15on/1.70/bcprov-jdk15on-1.70.jar"
+          ls -la jar
 
       - name: Descargar JRE para macOS
         run: |
-          mkdir jre_temp
-          $arch = if ($env:RUNNER_ARCH -eq 'ARM64') { 'aarch64' } else { 'x64' }
-          Invoke-WebRequest -Uri "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.9%2B9/OpenJDK17U-jre_${arch}_mac_hotspot_17.0.9_9.tar.gz" -OutFile "jre.tar.gz"
+          mkdir -p jre_temp jre
+          curl -fsSL -o jre.tar.gz "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.9%2B9/OpenJDK17U-jre_${{ matrix.arch }}_mac_hotspot_17.0.9_9.tar.gz"
           tar -xzf jre.tar.gz -C jre_temp
-          mkdir jre
-          Move-Item -Path "jre_temp\*\*" -Destination "jre\" -Force
-          Remove-Item -Recurse -Force "jre_temp", "jre.tar.gz"
+          if [ -d jre_temp/*/Contents/Home ]; then
+            mv jre_temp/*/Contents/Home/* jre/
+          else
+            mv jre_temp/*/* jre/
+          fi
+          rm -rf jre_temp jre.tar.gz
+          ls jre
 
       - name: Compilar con PyInstaller
         run: |
-          pyinstaller --noconfirm --onedir --windowed --name "AccesoLibre" `
-            --add-data "jar:jar" `
-            --add-data "jre:jre" `
-            --hidden-import modo_directo `
-            --hidden-import puente_access `
+          pyinstaller --noconfirm --onedir --windowed --name "AccesoLibre" \
+            --add-data "jar:jar" \
+            --add-data "jre:jre" \
+            --collect-all jpype \
+            --hidden-import modo_directo \
+            --hidden-import puente_access \
             accesolibre.py
 
       - name: Crear instalador .dmg
         run: |
-          hdiutil create -volname "AccesoLibre" -srcfolder "dist/AccesoLibre" -ov -format UDZO "AccesoLibre-macOS-${{ matrix.os == 'macos-14' && 'arm64' || 'x64' }}.dmg"
+          hdiutil create -volname "AccesoLibre" -srcfolder "dist/AccesoLibre" -ov -format UDZO "AccesoLibre-macOS-${{ matrix.arch }}.dmg"
 
       - name: Subir el instalador .dmg
         uses: actions/upload-artifact@v4
         with:
-          name: AccesoLibre-macOS-${{ matrix.os == 'macos-14' && 'arm64' || 'x64' }}
-          path: AccesoLibre-macOS-${{ matrix.os == 'macos-14' && 'arm64' || 'x64' }}.dmg
+          name: AccesoLibre-macOS-${{ matrix.arch }}
+          path: AccesoLibre-macOS-${{ matrix.arch }}.dmg
           retention-days: 7
