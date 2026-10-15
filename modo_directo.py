@@ -39,17 +39,56 @@ def recurso(relativo):
 
 
 def _buscar_libjvm():
-    bases = [recurso("jre")]
+    """Busca libjvm.dylib en las rutas típicas de macOS dentro del bundle .app"""
+    import platform
+    import glob as _glob
+    
+    bases = []
+    
+    # Ruta dentro del bundle PyInstaller en macOS
     if getattr(sys, "frozen", False):
+        if hasattr(sys, "_MEIPASS"):
+            bases.append(os.path.join(sys._MEIPASS, "jre"))
+        bases.append(os.path.join(os.path.dirname(sys.executable), "..", "Resources", "jre"))
         bases.append(os.path.join(os.path.dirname(sys.executable), "jre"))
+    
+    # Ruta de desarrollo (cuando ejecutas desde fuente)
+    bases.append(recurso("jre"))
+    
+    # Rutas típicas de Java instalado en macOS
+    bases.append("/Library/Java/JavaVirtualMachines")
+    bases.append(os.path.expanduser("~/Library/Java/JavaVirtualMachines"))
+    
+    # Buscar libjvm.dylib (macOS) o libjvm.so (Linux)
+    sistema = platform.system()
+    if sistema == "Darwin":  # macOS
+        nombre_lib = "libjvm.dylib"
+        rutas_busqueda = [
+            "lib/server/libjvm.dylib",
+            "jre/lib/server/libjvm.dylib",
+            "Contents/Home/lib/server/libjvm.dylib",
+        ]
+    else:  # Linux
+        nombre_lib = "libjvm.so"
+        rutas_busqueda = [
+            "lib/server/libjvm.so",
+            "jre/lib/server/libjvm.so",
+        ]
+    
     for base in bases:
-        for rel in ("lib/server/libjvm.so", "lib/server/libjvm.dylib",
-                    "bin/server/jvm.dll", "jre/bin/server/jvm.dll"):
-            p = os.path.join(base, rel)
-            if os.path.isfile(p):
-                return p
+        if not os.path.isdir(base):
+            continue
+        for ruta_rel in rutas_busqueda:
+            candidato = os.path.join(base, ruta_rel)
+            if os.path.isfile(candidato):
+                return candidato
+        
+        # Búsqueda recursiva por si la estructura es diferente
+        for archivo in _glob.glob(os.path.join(base, "**", nombre_lib), recursive=True):
+            if os.path.isfile(archivo):
+                return archivo
+    
     return None
-
 
 def iniciar_java():
     if jpype.isJVMStarted():
