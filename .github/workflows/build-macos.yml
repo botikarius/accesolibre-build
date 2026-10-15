@@ -1,19 +1,11 @@
-name: Compilar Instalador macOS
+name: Compilar Instalador macOS (arm64)
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-macos:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-13
-            arch: x64
-          - runner: macos-14
-            arch: arm64
-    runs-on: ${{ matrix.runner }}
+  build-macos-arm64:
+    runs-on: macos-14
     steps:
       - name: Descargar código
         uses: actions/checkout@v4
@@ -31,18 +23,25 @@ jobs:
       - name: Descargar librerías Java (Jackcess + Encrypt)
         run: |
           mkdir -p jar
-          curl -fsSL -o jar/jackcess-4.0.5.jar "https://repo1.maven.org/maven2/com/healthmarketscience/jackcess/jackcess/4.0.5/jackcess-4.0.5.jar"
-          curl -fsSL -o jar/commons-lang3-3.12.0.jar "https://repo1.maven.org/maven2/org/apache/commons/commons-lang3/3.12.0/commons-lang3-3.12.0.jar"
-          curl -fsSL -o jar/commons-logging-1.2.jar "https://repo1.maven.org/maven2/commons-logging/commons-logging/1.2/commons-logging-1.2.jar"
-          curl -fsSL -o jar/jackcess-encrypt-3.0.0.jar "https://repo1.maven.org/maven2/com/healthmarketscience/jackcess/jackcess-encrypt/3.0.0/jackcess-encrypt-3.0.0.jar"
-          curl -fsSL -o jar/bcpkix-jdk15on-1.70.jar "https://repo1.maven.org/maven2/org/bouncycastle/bcpkix-jdk15on/1.70/bcpkix-jdk15on-1.70.jar"
-          curl -fsSL -o jar/bcprov-jdk15on-1.70.jar "https://repo1.maven.org/maven2/org/bouncycastle/bcprov-jdk15on/1.70/bcprov-jdk15on-1.70.jar"
+          curl -fsSL --connect-timeout 30 --retry 5 --retry-all-errors --retry-delay 2 \
+            -o jar/jackcess-4.0.5.jar "https://repo1.maven.org/maven2/com/healthmarketscience/jackcess/jackcess/4.0.5/jackcess-4.0.5.jar"
+          curl -fsSL --connect-timeout 30 --retry 5 --retry-all-errors --retry-delay 2 \
+            -o jar/commons-lang3-3.12.0.jar "https://repo1.maven.org/maven2/org/apache/commons/commons-lang3/3.12.0/commons-lang3-3.12.0.jar"
+          curl -fsSL --connect-timeout 30 --retry 5 --retry-all-errors --retry-delay 2 \
+            -o jar/commons-logging-1.2.jar "https://repo1.maven.org/maven2/commons-logging/commons-logging/1.2/commons-logging-1.2.jar"
+          curl -fsSL --connect-timeout 30 --retry 5 --retry-all-errors --retry-delay 2 \
+            -o jar/jackcess-encrypt-3.0.0.jar "https://repo1.maven.org/maven2/com/healthmarketscience/jackcess/jackcess-encrypt/3.0.0/jackcess-encrypt-3.0.0.jar"
+          curl -fsSL --connect-timeout 30 --retry 5 --retry-all-errors --retry-delay 2 \
+            -o jar/bcpkix-jdk15on-1.70.jar "https://repo1.maven.org/maven2/org/bouncycastle/bcpkix-jdk15on/1.70/bcpkix-jdk15on-1.70.jar"
+          curl -fsSL --connect-timeout 30 --retry 5 --retry-all-errors --retry-delay 2 \
+            -o jar/bcprov-jdk15on-1.70.jar "https://repo1.maven.org/maven2/org/bouncycastle/bcprov-jdk15on/1.70/bcprov-jdk15on-1.70.jar"
           ls -la jar
 
-      - name: Descargar JRE para macOS
+      - name: Descargar JRE para macOS arm64
         run: |
           mkdir -p jre_temp jre
-          curl -fsSL -o jre.tar.gz "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.9%2B9/OpenJDK17U-jre_${{ matrix.arch }}_mac_hotspot_17.0.9_9.tar.gz"
+          curl -fsSL --connect-timeout 30 --retry 5 --retry-all-errors --retry-delay 2 \
+            -o jre.tar.gz "https://api.adoptium.net/v3/binary/latest/17/ga/mac/aarch64/jre/hotspot/normal/eclipse"
           tar -xzf jre.tar.gz -C jre_temp
           if [ -d jre_temp/*/Contents/Home ]; then
             mv jre_temp/*/Contents/Home/* jre/
@@ -64,11 +63,11 @@ jobs:
 
       - name: Crear instalador .dmg
         run: |
-          hdiutil create -volname "AccesoLibre" -srcfolder "dist/AccesoLibre" -ov -format UDZO "AccesoLibre-macOS-${{ matrix.arch }}.dmg"
+          hdiutil create -volname "AccesoLibre" -srcfolder "dist/AccesoLibre" -ov -format UDZO "AccesoLibre-macOS-arm64.dmg"
 
       - name: Subir el instalador .dmg
         uses: actions/upload-artifact@v4
         with:
-          name: AccesoLibre-macOS-${{ matrix.arch }}
-          path: AccesoLibre-macOS-${{ matrix.arch }}.dmg
+          name: AccesoLibre-macOS-arm64
+          path: AccesoLibre-macOS-arm64.dmg
           retention-days: 7
